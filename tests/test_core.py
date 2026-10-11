@@ -67,3 +67,24 @@ def test_audit_redacts_raw_arguments(tmp_path):
 def test_policy_rejects_windows_path_in_executable_allowlist():
     with pytest.raises(ValueError, match="invalid executable"):
         Policy((r"C:\\Windows\\System32\\cmd.exe",))
+
+def test_process_allowlist_network_policy_fails_closed(tmp_path):
+    sb = Sandbox(tmp_path, Policy((py(),), network="allowlist", allow_unenforced_network=True))
+    with pytest.raises(SandboxUnavailable, match="allow-list networking"):
+        sb.run([py(), "--version"])
+
+
+def test_process_rejects_path_environment_override(tmp_path):
+    sb = make(tmp_path, allow_unenforced_network=True)
+    with pytest.raises(PolicyDenied, match="environment variable override"):
+        sb.run([py(), "--version"], env={"PATH": "custom-value"})
+
+
+def test_audit_log_detects_external_change_after_init(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    audit.append({"event": "first"})
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("{}\n")
+    with pytest.raises(Exception, match="audit log changed"):
+        audit.append({"event": "second"})
