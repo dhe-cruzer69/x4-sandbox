@@ -57,7 +57,7 @@ class DockerBackend:
         if not self.workspace.is_dir():
             raise ValueError("workspace must be an existing directory")
         if not _IMAGE.fullmatch(image):
-            raise ValueError("image must be name@sha256:<64 lowercase hex>; mutable tags are denied")
+            raise ValueError("image must be name@sha256:<64 lowercase hex>; mutable tags are denied; image digest must be immutable")
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", context):
             raise ValueError("invalid Docker context")
         if policy.network != "deny" or policy.allow_unenforced_network:
