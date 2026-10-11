@@ -214,7 +214,7 @@ class DockerBackend:
         args = ["create", "--pull=never", "--name", name, "--network", "none",
             "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--pids-limit", str(l.pids_limit), "--memory", str(l.memory_bytes),
-            "--memory-swap", str(l.memory_bytes), "--cpus", f"{l.cpus:g}",
+            "--memory-swap", str(l.memory_bytes), "--cpus", repr(l.cpus),
             "--user", "65532:65532", "--ipc", "private", "--shm-size", str(l.tmpfs_bytes),
             "--cgroupns", "private",
             "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size={l.tmpfs_bytes},mode=1777",
