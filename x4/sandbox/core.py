@@ -62,8 +62,13 @@ class AuditLog:
         key = str(self.path.resolve())
         with type(self)._path_locks_guard:
             self._lock = type(self)._path_locks.setdefault(key, threading.RLock())
-        self.previous = self._verify()
-        self._signature = self._file_signature()
+        before = self._file_signature()
+        verified_tail = self._verify()
+        after = self._file_signature()
+        if before != after:
+            raise SandboxError("audit log changed while it was being verified")
+        self.previous = verified_tail
+        self._signature = after
 
     def _file_signature(self) -> tuple[int, int, int] | None:
         try:
@@ -86,27 +91,43 @@ class AuditLog:
                 prev = digest
         return prev
     def append(self, event: Mapping[str, Any]) -> str:
-        # Serialize writers sharing this path in this process; recheck the persisted
-        # chain before each append so edits after initialization are detected.
+        # Lock the log file across threads and processes. The signature check catches
+        # out-of-band writes since this instance was initialized or last appended.
         with self._lock:
-            if self._file_signature() != self._signature:
-                raise SandboxError("audit log changed since this writer's last append")
-            current = self.previous
-            row = dict(event)
-            row["previous_hash"] = current
-            digest = hashlib.sha256(_json(row).encode()).hexdigest()
-            row["hash"] = digest
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+            locked = False
             try:
+                if os.name == "nt":
+                    import msvcrt
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                locked = True
+                if self._file_signature() != self._signature:
+                    raise SandboxError("audit log changed since this writer's last append")
+                row = dict(event)
+                row["previous_hash"] = self.previous
+                digest = hashlib.sha256(_json(row).encode()).hexdigest()
+                row["hash"] = digest
                 with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
                     f.write(_json(row) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
+                self.previous = digest
+                self._signature = self._file_signature()
+                return digest
             finally:
+                if locked:
+                    if os.name == "nt":
+                        import msvcrt
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
-            self.previous = digest
-            self._signature = self._file_signature()
-            return digest
 
 class Sandbox:
     """Run allow-listed programs with shell=False, timeout and bounded output.
