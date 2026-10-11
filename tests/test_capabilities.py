@@ -45,7 +45,8 @@ def test_expired_approval_is_rejected(monkeypatch):
     grant = authority.issue("mcp.tool.invoke", "db/write", ttl_seconds=1)
     gate = CapabilityGate([("mcp.tool.invoke", "db/write")],
         approval_required=[("mcp.tool.invoke", "db/write")], authority=authority)
-    monkeypatch.setattr("x4.sandbox.capabilities.time.time", lambda: grant.expires_at + 1)
+    monotonic_now = __import__("time").monotonic()
+    monkeypatch.setattr("x4.sandbox.capabilities.time.monotonic", lambda: monotonic_now + 2)
     with pytest.raises(ApprovalRequired, match="expired"):
         gate.authorize("mcp.tool.invoke", "db/write", approval_token=grant.token)
 
