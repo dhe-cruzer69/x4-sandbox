@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -120,6 +121,20 @@ class DockerBackend:
             raise PolicyDenied("argument exceeds 32 KiB")
         return args
 
+    @staticmethod
+    def _is_link_or_reparse(path: Path) -> bool:
+        if path.is_symlink():
+            return True
+        junction = getattr(path, "is_junction", None)
+        if callable(junction) and junction():
+            return True
+        if os.name == "nt":
+            try:
+                return bool(path.lstat().st_file_attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+            except (AttributeError, OSError):
+                return False
+        return False
+
     def _stage(self, target: Path, paths: Sequence[str]) -> None:
         selected: set[str] = set()
         total = 0
@@ -137,13 +152,13 @@ class DockerBackend:
             current = self.workspace
             for part in p.parts:
                 current = current / part
-                if current.is_symlink():
+                if self._is_link_or_reparse(current):
                     raise PolicyDenied("symlink inputs denied")
             if not source.exists() or not (source.is_file() or source.is_dir()):
                 raise PolicyDenied("input must exist and be a regular file or directory")
             candidates = [source] if source.is_file() else sorted(source.rglob("*"))
             for item in candidates:
-                if item.is_symlink() or not (item.is_file() or item.is_dir()):
+                if self._is_link_or_reparse(item) or not (item.is_file() or item.is_dir()):
                     raise PolicyDenied("symlink/special input files denied")
                 rel = item.relative_to(self.workspace)
                 parts = [x.lower() for x in rel.parts]
@@ -157,7 +172,16 @@ class DockerBackend:
                 if total > _INPUT_MAX:
                     raise PolicyDenied("input snapshot exceeds 256 MiB")
                 (target / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(item, target / rel, follow_symlinks=False)
+                source_fd = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    source_stat = os.fstat(source_fd)
+                    if not stat.S_ISREG(source_stat.st_mode):
+                        raise PolicyDenied("input source changed to a non-regular file")
+                    with os.fdopen(source_fd, "rb", closefd=False) as source_stream:
+                        with (target / rel).open("xb") as target_stream:
+                            shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                finally:
+                    os.close(source_fd)
         target.chmod(0o755)
 
     def _validate_argv(self, argv: Sequence[str]) -> tuple[str, ...]:
