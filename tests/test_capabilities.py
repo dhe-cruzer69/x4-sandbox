@@ -74,3 +74,28 @@ def test_mcp_exact_capability_and_safe_arguments():
     with pytest.raises(PolicyDenied, match="JSON-safe"):
         wrapper.call_tool(server="filesystem", tool="read_file", arguments={"x": object()})
     assert len(real.calls) == 1
+
+
+def test_approval_policy_cannot_reference_ungated_pair():
+    with pytest.raises(ValueError, match="also be explicitly allow-listed"):
+        CapabilityGate((), approval_required=[("mcp.tool.invoke", "filesystem/delete")])
+
+
+def test_mcp_capability_is_selected_by_trusted_configuration():
+    real = FakeGateway()
+    pair = ("mcp.tool.delete", "filesystem/delete_file")
+    authority = ApprovalAuthority()
+    gate = CapabilityGate([pair], approval_required=[pair], authority=authority)
+    wrapper = GuardedMCPGateway(real, gate, capabilities={
+        ("filesystem", "delete_file"): "mcp.tool.delete"
+    })
+    grant = authority.issue(*pair)
+    assert wrapper.call_tool(server="filesystem", tool="delete_file",
+        arguments={"path": "disposable.txt"}, approval_token=grant.token) == {"ok": True}
+    assert len(real.calls) == 1
+
+
+def test_mcp_caller_cannot_choose_capability():
+    import inspect
+    parameters = inspect.signature(GuardedMCPGateway.call_tool).parameters
+    assert "capability" not in parameters
