@@ -1,7 +1,7 @@
-# Security Policy — x4-sandbox
+# Security Policy
 
-This component is security-critical.
-
-Threats: filesystem escape, command injection, resource exhaustion, network leakage, audit bypass.
-
-Report privately.
+Do not run untrusted code with the process backend. It does not enforce network,
+filesystem, CPU, memory, or disk isolation. The default network-deny policy fails
+closed because process mode cannot guarantee network isolation. Do not enable the
+unsafe acknowledgement for untrusted workloads. Report vulnerabilities privately
+and never include credentials, private keys, or sensitive audit logs.

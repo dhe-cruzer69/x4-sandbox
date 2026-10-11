@@ -1,60 +1,45 @@
 # x4-sandbox
 
-**Secure sandboxed tool execution for AI agents**
+Policy-gated, auditable process execution for X4 agents.
 
-Filesystem isolation • Command allow-lists • Resource limits • Approval gates • Immutable audit logs
+**Security:** process mode is not an OS sandbox and is not suitable for hostile code.
+It cannot enforce network denial or hard CPU, memory, disk, or filesystem quotas. The
+default network-deny policy blocks execution unless the caller explicitly acknowledges
+the limitation. That override does not disable network access and must not be used for
+untrusted workloads.
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-v0.1-orange)](CHANGELOG.md)
+## Install and verify
 
-Part of **[ARIEX4Ops / X4](https://github.com/dhe-cruzer69)**.
+Requires Python 3.11+.
 
----
+    python -m pip install -e .
+    python -m pip install pytest ruff
+    pytest
+    ruff check .
 
-## Principle
+## Inspect without executing
 
-No tool execution without policy evaluation.
+    x4-sandbox inspect --workspace ./workspace --allow python git
 
-## 60-second example
+## Trusted command example (unsafe acknowledgement)
 
-```python
-from x4.sandbox import Sandbox
+Only for trusted code in a controlled environment:
 
-sandbox = Sandbox(
-    workspace="./workspace",
-    allowed_commands=["python", "git", "ls"],
-    network=False,
-    timeout_seconds=30,
-)
-result = sandbox.run(["python", "script.py"])
-print(result.stdout)
-```
+    x4-sandbox run --workspace ./workspace --allow python --acknowledge-unenforced-network -- python --version
 
-## Architecture & threat model
+## Implemented
 
-See [ARCHITECTURE.md](ARCHITECTURE.md).
+- Exact executable allow-list and argument-vector execution with shell=False
+- Blocks common shell command-string flags
+- Timeout and captured-output bounds
+- Environment variable allow-list and NUL rejection
+- Workspace cwd and JSONL SHA-256 hash chain
+- One-use approval tokens for caller-designated sensitive SDK operations\n- Fail-closed default for unsupported network-deny guarantee
+- CLI inspect/run commands and CI tests
 
-Isolation levels (planned):
-1. Process-level (v0.1 target)
-2. Container
-3. MicroVM / remote worker
+## Not implemented
 
-Never claim stronger isolation than the implementation provides.
-
-## Related
-
-- [x4-agents](https://github.com/dhe-cruzer69/x4-agents) — primary consumer
-- [x4-core](https://github.com/dhe-cruzer69/x4-core) — shared primitives
-- [x4-mcp-gateway](https://github.com/dhe-cruzer69/x4-mcp-gateway) — controlled external tools
-
-## License
-
-Apache-2.0
-
-## Security
-
-See [SECURITY.md](SECURITY.md).
-
-## Support
-
-**[GitHub Sponsors](https://github.com/sponsors/dhe-cruzer69)**
+OS-enforced network isolation, child-process filesystem isolation, hard CPU/memory/disk
+quotas, Windows Job Objects, containers, microVMs, approval service, REST/MCP APIs,
+cloud providers, or cryptographic signatures. Use a real OS/container boundary before
+executing untrusted code.

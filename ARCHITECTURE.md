@@ -1,48 +1,18 @@
-# x4-sandbox Architecture
+# x4-sandbox Architecture v0.2
 
-## Purpose
+The process backend runs an allow-listed executable using argument arrays,
+shell=False, a bounded timeout, bounded captured output, an environment allow-list,
+a workspace working directory, and JSONL hash-chained audit records.
 
-Provide a clear isolation boundary between agent intent and tool execution.
+## Security boundary
 
-## Threat model focus
+This is process-level containment, not a sandbox for hostile code. It does not
+enforce network denial, filesystem access controls, CPU quotas, memory quotas,
+disk quotas, syscall filtering, or Windows Job Objects. The configured default
+network-deny policy therefore fails closed unless the caller explicitly opts into
+the unenforced limitation. Do not use that override for untrusted code.
 
-- Filesystem escape
-- Command injection
-- Resource exhaustion (CPU / memory / disk / time)
-- Network leakage
-- Audit bypass
-
-## Target capabilities
-
-```
-Sandbox
-├── filesystem isolation (workspace root)
-├── command allow-list
-├── network policy (default deny)
-├── resource limits (CPU, memory, disk, time)
-├── approval gates for elevated actions
-├── immutable audit events
-└── cleanup on exit
-```
-
-## API direction
-
-```python
-from x4.sandbox import Sandbox
-
-sb = Sandbox(
-    workspace="./workspace",
-    allowed_commands=["python", "git"],
-    network=False,
-    timeout_seconds=30,
-)
-result = sb.run(["python", "task.py"])
-```
-
-## Isolation levels (planned)
-
-1. Process-level (current target for v0.1)
-2. Container
-3. MicroVM / remote worker (later)
-
-Never claim stronger isolation than the implementation provides.
+Container and remote-worker adapters must report effective capabilities. Any request
+requiring isolation must fail closed unless the backend proves the control is active.
+Hash chaining detects log edits but cannot prevent a privileged actor from replacing
+the entire log; export the final hash independently for stronger evidence.
