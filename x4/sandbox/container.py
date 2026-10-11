@@ -157,6 +157,30 @@ class DockerBackend:
                 shutil.copyfile(item, target / rel, follow_symlinks=False)
         target.chmod(0o755)
 
+    def _validate_argv(self, argv: Sequence[str]) -> tuple[str, ...]:
+        return self._argv(argv)
+
+    def _stage_inputs(self, destination: Path, input_paths: Sequence[str]) -> None:
+        self._stage(destination, input_paths)
+
+    def _create_args(self, name: str, staged: Path, argv: tuple[str, ...], env: Mapping[str, str]) -> list[str]:
+        return self._create(name, staged, argv, env)
+
+    @staticmethod
+    def _same_mount_source(observed: str, expected: Path | str) -> bool:
+        def norm(value: str) -> str:
+            out = value.replace("\\", "/")
+            if out.startswith("//?/"):
+                out = out[4:]
+            return out.rstrip("/").casefold()
+        expected_value = str(expected.resolve()) if isinstance(expected, Path) else str(expected)
+        expected_norm = norm(expected_value)
+        variants = {expected_norm}
+        if len(expected_norm) >= 3 and expected_norm[1:3] == ":/":
+            drive, tail = expected_norm[0].lower(), expected_norm[3:]
+            variants.update({f"/run/desktop/mnt/host/{drive}/{tail}", f"/host_mnt/{drive}/{tail}", f"/mnt/host/{drive}/{tail}"})
+        return norm(observed) in variants
+
     def _create(self, name: str, staged: Path, argv: tuple[str, ...],
                 env: Mapping[str, str]) -> list[str]:
         l = self.limits
@@ -212,7 +236,7 @@ class DockerBackend:
             raise SandboxUnavailable("input mount must be read-only and mapped only at /input")
         expected = str(staged.resolve()).replace("\\", "/").rstrip("/").casefold()
         observed = str(binds[0].get("Source", "")).replace("\\", "/").rstrip("/").casefold()
-        if expected != observed:
+        if not self._same_mount_source(observed, staged):
             raise SandboxUnavailable("input mount source differs from the staged snapshot")
 
     @staticmethod
