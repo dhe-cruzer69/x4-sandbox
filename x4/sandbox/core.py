@@ -212,12 +212,13 @@ class Sandbox:
             taskkill = Path(system_root) / "System32" / "taskkill.exe"
             if taskkill.is_file():
                 try:
-                    subprocess.run(
+                    killed = subprocess.run(
                         [str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         env=dict(child_env), timeout=5, check=False, shell=False,
                     )
-                    return
+                    if killed.returncode == 0 or proc.poll() is not None:
+                        return
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             proc.kill()
