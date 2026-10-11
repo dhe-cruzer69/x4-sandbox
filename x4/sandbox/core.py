@@ -54,8 +54,14 @@ def _text(raw: bytes, cap: int) -> tuple[str, bool]:
 
 class AuditLog:
     """JSONL SHA-256 chain; detects edits but cannot prevent full-log replacement."""
+    _path_locks_guard = threading.Lock()
+    _path_locks: dict[str, Any] = {}
+
     def __init__(self, path: str | Path):
         self.path = Path(path); self.path.parent.mkdir(parents=True, exist_ok=True)
+        key = str(self.path.resolve())
+        with type(self)._path_locks_guard:
+            self._lock = type(self)._path_locks.setdefault(key, threading.RLock())
         self.previous = self._verify()
     def _verify(self) -> str:
         if not self.path.exists() or not self.path.stat().st_size: return "0" * 64
@@ -71,15 +77,26 @@ class AuditLog:
                 prev = digest
         return prev
     def append(self, event: Mapping[str, Any]) -> str:
-        row = dict(event); row["previous_hash"] = self.previous
-        digest = hashlib.sha256(_json(row).encode()).hexdigest(); row["hash"] = digest
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
-                f.write(_json(row) + "\n"); f.flush(); os.fsync(f.fileno())
-        finally: os.close(fd)
-        self.previous = digest
-        return digest
+        # Serialize writers sharing this path in this process; recheck the persisted
+        # chain before each append so edits after initialization are detected.
+        with self._lock:
+            current = self._verify()
+            if current != self.previous:
+                raise SandboxError("audit log changed since this writer's last append")
+            row = dict(event)
+            row["previous_hash"] = current
+            digest = hashlib.sha256(_json(row).encode()).hexdigest()
+            row["hash"] = digest
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
+                    f.write(_json(row) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+            finally:
+                os.close(fd)
+            self.previous = digest
+            return digest
 
 class Sandbox:
     """Run allow-listed programs with shell=False, timeout and bounded output.
@@ -103,7 +120,9 @@ class Sandbox:
         args = tuple(str(x) for x in argv)
         try:
             self._validate(args)
-            if self.policy.network == "deny" and not self.policy.allow_unenforced_network:
+            if self.policy.network != "deny":
+                raise SandboxUnavailable("process backend cannot enforce allow-list networking; execution blocked")
+            if not self.policy.allow_unenforced_network:
                 raise SandboxUnavailable("process backend cannot enforce network denial; execution blocked")
             if sensitive and (not approval_token or approval_token not in self._approval_tokens):
                 raise ApprovalRequired("sensitive operation requires a valid one-use approval token")
@@ -114,6 +133,12 @@ class Sandbox:
             for k, v in (env or {}).items():
                 if k not in self.policy.allowed_env:
                     raise PolicyDenied(f"environment variable not allowed: {k}")
+                if k.upper() in {
+                    "PATH", "SYSTEMROOT", "WINDIR", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NODE_OPTIONS",
+                    "BASH_ENV", "ENV", "RUBYOPT", "PERL5OPT",
+                }:
+                    raise PolicyDenied(f"environment variable override is unsafe: {k}")
                 if not isinstance(v, str) or "\0" in v:
                     raise PolicyDenied("invalid environment value")
                 child_env[k] = v
