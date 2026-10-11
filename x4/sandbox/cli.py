@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -58,11 +59,12 @@ def main(argv: list[str] | None = None) -> int:
                 "network_isolation_enforced": False,
                 "network_isolation_status": "not_verified_until_container_preflight",
                 "allowed_commands": list(policy.allowed_commands),
-                "execution_enabled_by_default": args.backend == "docker",
+                "execution_enabled_by_default": False,
             }
             if args.backend == "docker":
                 status.update({
-                    "image_digest_pinned": bool(args.image and "@sha256:" in args.image),
+                    "image_digest_pinned": bool(args.image and re.fullmatch(r"[^@\\s]+@sha256:[0-9a-f]{64}", args.image)),
+                    "warning": "planned policy only; no daemon or image validation occurs during inspect",
                     "planned_controls": [
                         "local daemon endpoint", "network=none", "read-only root filesystem",
                         "drop all Linux capabilities", "no-new-privileges", "seccomp active",
