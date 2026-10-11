@@ -1,6 +1,6 @@
 """Policy-gated process execution. This is not an OS security boundary."""
 from __future__ import annotations
-import hashlib, json, os, shutil, subprocess, time, uuid
+import hashlib, json, os, shutil, signal, subprocess, threading, time, uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +29,7 @@ class Policy:
         if not 0 < self.timeout_seconds <= 3600: raise ValueError("timeout must be in (0, 3600]")
         if not 0 < self.max_output_bytes <= 10_000_000: raise ValueError("invalid output limit")
         for c in self.allowed_commands:
-            if not c or Path(c).name != c or any(x in c for x in ("/", "\\\\", "\0")):
+            if not c or Path(c).name != c or "/" in c or "\\" in c or "\0" in c:
                 raise ValueError(f"invalid executable allow-list entry: {c!r}")
 
 @dataclass(frozen=True)
@@ -98,53 +98,141 @@ class Sandbox:
     def run(self, argv: Sequence[str], *, timeout_seconds: float | None = None,
             env: Mapping[str, str] | None = None, sensitive: bool = False,
             approval_token: str | None = None) -> RunResult:
-        run_id = str(uuid.uuid4()); start = time.monotonic(); args = tuple(str(x) for x in argv)
+        run_id = str(uuid.uuid4())
+        start = time.monotonic()
+        args = tuple(str(x) for x in argv)
         try:
             self._validate(args)
             if self.policy.network == "deny" and not self.policy.allow_unenforced_network:
                 raise SandboxUnavailable("process backend cannot enforce network denial; execution blocked")
             if sensitive and (not approval_token or approval_token not in self._approval_tokens):
-                raise ApprovalRequired("sensitive operation requires a valid approval token")
+                raise ApprovalRequired("sensitive operation requires a valid one-use approval token")
             timeout = self.policy.timeout_seconds if timeout_seconds is None else timeout_seconds
             if not 0 < timeout <= self.policy.timeout_seconds:
                 raise PolicyDenied("run timeout must be positive and within policy limit")
             child_env = {k: os.environ[k] for k in self.policy.allowed_env if k in os.environ}
             for k, v in (env or {}).items():
-                if k not in self.policy.allowed_env: raise PolicyDenied(f"environment variable not allowed: {k}")
-                if not isinstance(v, str) or "\0" in v: raise PolicyDenied("invalid environment value")
+                if k not in self.policy.allowed_env:
+                    raise PolicyDenied(f"environment variable not allowed: {k}")
+                if not isinstance(v, str) or "\0" in v:
+                    raise PolicyDenied("invalid environment value")
                 child_env[k] = v
             if sensitive:
                 self._approval_tokens.remove(approval_token)
-            self.audit.append({"event":"execution_started","timestamp":_now(),"run_id":run_id,
-                               "argv":list(args),"policy_decision":"allow","cwd":str(self.workspace),
-                               "network_isolation_enforced":False})
+            argv_digest = hashlib.sha256(_json({"argv": list(args)}).encode()).hexdigest()
+            self.audit.append({
+                "event": "execution_started", "timestamp": _now(), "run_id": run_id,
+                "executable": Path(args[0]).name, "argument_count": len(args),
+                "argv_sha256": argv_digest, "policy_decision": "allow",
+                "network_isolation_enforced": False,
+            })
+            kwargs: dict[str, Any] = {
+                "cwd": self.workspace, "env": child_env, "shell": False,
+                "stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE, "close_fds": True,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            else:
+                kwargs["start_new_session"] = True
             try:
-                p = subprocess.run(list(args), cwd=self.workspace, env=child_env, shell=False,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=timeout, check=False, close_fds=True)
-                out, oc = _text(p.stdout, self.policy.max_output_bytes)
-                err, ec = _text(p.stderr, self.policy.max_output_bytes)
-                result = RunResult(run_id,args,p.returncode,out,err,time.monotonic()-start,False,oc or ec,"allow")
-            except subprocess.TimeoutExpired as e:
-                out = e.stdout or b""; err = e.stderr or b""
-                if isinstance(out,str): out=out.encode()
-                if isinstance(err,str): err=err.encode()
-                out,oc=_text(out,self.policy.max_output_bytes); err,ec=_text(err,self.policy.max_output_bytes)
-                result=RunResult(run_id,args,None,out,err,time.monotonic()-start,True,oc or ec,"allow")
-            self.audit.append({"event":"execution_finished","timestamp":_now(),"run_id":run_id,
-                "returncode":result.returncode,"timed_out":result.timed_out,
-                "duration_seconds":round(result.duration_seconds,6),"output_truncated":result.output_truncated})
+                proc = subprocess.Popen(list(args), **kwargs)
+            except OSError as e:
+                raise SandboxUnavailable(f"process executable failed to start: {type(e).__name__}") from e
+
+            out = bytearray()
+            err = bytearray()
+            out_truncated = [False]
+            err_truncated = [False]
+            out_reader = threading.Thread(
+                target=self._drain_output,
+                args=(proc.stdout, self.policy.max_output_bytes, out, out_truncated),
+                daemon=True,
+            )
+            err_reader = threading.Thread(
+                target=self._drain_output,
+                args=(proc.stderr, self.policy.max_output_bytes, err, err_truncated),
+                daemon=True,
+            )
+            out_reader.start()
+            err_reader.start()
+            timed_out = False
+            try:
+                returncode = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self._kill_process_tree(proc, child_env)
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                returncode = None
+            out_reader.join(timeout=2)
+            err_reader.join(timeout=2)
+            result = RunResult(
+                run_id, args, returncode,
+                bytes(out).decode("utf-8", errors="replace"),
+                bytes(err).decode("utf-8", errors="replace"),
+                time.monotonic() - start, timed_out,
+                out_truncated[0] or err_truncated[0], "allow",
+            )
+            self.audit.append({
+                "event": "execution_finished", "timestamp": _now(), "run_id": run_id,
+                "returncode": result.returncode, "timed_out": result.timed_out,
+                "duration_seconds": round(result.duration_seconds, 6),
+                "output_truncated": result.output_truncated,
+            })
             return result
         except SandboxError as e:
-            self.audit.append({"event":"execution_denied","timestamp":_now(),"run_id":run_id,
-                               "argv":list(args),"reason":str(e),"policy_decision":"deny"})
+            self.audit.append({
+                "event": "execution_denied", "timestamp": _now(), "run_id": run_id,
+                "executable": Path(args[0]).name if args else None,
+                "argument_count": len(args), "reason_type": type(e).__name__,
+                "policy_decision": "deny",
+            })
             raise
+
+    @staticmethod
+    def _drain_output(stream: Any, cap: int, sink: bytearray, truncated: list[bool]) -> None:
+        while True:
+            chunk = stream.read(8192)
+            if not chunk:
+                break
+            room = cap - len(sink)
+            if room > 0:
+                sink.extend(chunk[:room])
+            if len(chunk) > room:
+                truncated[0] = True
+
+    @staticmethod
+    def _kill_process_tree(proc: subprocess.Popen[bytes], child_env: Mapping[str, str]) -> None:
+        if os.name == "nt":
+            system_root = os.environ.get("SystemRoot", os.environ.get("SYSTEMROOT", r"C:\Windows"))
+            taskkill = Path(system_root) / "System32" / "taskkill.exe"
+            if taskkill.is_file():
+                try:
+                    subprocess.run(
+                        [str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        env=dict(child_env), timeout=5, check=False, shell=False,
+                    )
+                    return
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            proc.kill()
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+
     def _validate(self, args: tuple[str, ...]) -> None:
         if not args or not args[0]: raise PolicyDenied("argv must contain executable")
         if any("\0" in x for x in args): raise PolicyDenied("NUL bytes are forbidden")
         if args[0] not in self.policy.allowed_commands: raise PolicyDenied(f"executable not allow-listed: {args[0]!r}")
         if Path(args[0]).name != args[0]: raise PolicyDenied("use allow-listed executable name, not path")
-        if any(x in {"-c","/c","-Command","-EncodedCommand"} for x in args[1:]):
+        if any(x.lower() in {"-c", "/c", "-command", "-encodedcommand", "-enc", "-e"} for x in args[1:]):
             raise PolicyDenied("shell command-string flags are blocked")
         if shutil.which(args[0], path=os.environ.get("PATH","")) is None:
             raise PolicyDenied(f"executable not found on PATH: {args[0]!r}")
