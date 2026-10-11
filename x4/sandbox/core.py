@@ -59,6 +59,12 @@ class AuditLog:
 
     def __init__(self, path: str | Path):
         self.path = Path(path); self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(fd)
+        except FileExistsError:
+            if self.path.is_symlink():
+                raise SandboxError("audit path must not be a symlink")
         key = str(self.path.resolve())
         with type(self)._path_locks_guard:
             self._lock = type(self)._path_locks.setdefault(key, threading.RLock())
