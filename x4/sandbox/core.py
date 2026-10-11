@@ -12,6 +12,8 @@ class PolicyDenied(SandboxError):
     """Operation rejected by policy."""
 class SandboxUnavailable(SandboxError):
     """Requested security guarantee is unavailable."""
+class ApprovalRequired(PolicyDenied):
+    """A sensitive operation lacks a valid one-use approval token."""
 
 @dataclass(frozen=True)
 class Policy:
@@ -86,18 +88,23 @@ class Sandbox:
     The default network-deny setting therefore fails closed unless explicitly overridden.
     Never use the override for untrusted code.
     """
-    def __init__(self, workspace: str | Path, policy: Policy, audit_path: str | Path | None = None):
+    def __init__(self, workspace: str | Path, policy: Policy, audit_path: str | Path | None = None,
+                 approval_tokens: Sequence[str] = ()):
         self.workspace = Path(workspace).expanduser().resolve()
         if not self.workspace.is_dir(): raise ValueError("workspace must be an existing directory")
         self.policy = policy
         self.audit = AuditLog(audit_path or self.workspace / ".x4" / "audit.jsonl")
+        self._approval_tokens = set(approval_tokens)
     def run(self, argv: Sequence[str], *, timeout_seconds: float | None = None,
-            env: Mapping[str, str] | None = None) -> RunResult:
+            env: Mapping[str, str] | None = None, sensitive: bool = False,
+            approval_token: str | None = None) -> RunResult:
         run_id = str(uuid.uuid4()); start = time.monotonic(); args = tuple(str(x) for x in argv)
         try:
             self._validate(args)
             if self.policy.network == "deny" and not self.policy.allow_unenforced_network:
                 raise SandboxUnavailable("process backend cannot enforce network denial; execution blocked")
+            if sensitive and (not approval_token or approval_token not in self._approval_tokens):
+                raise ApprovalRequired("sensitive operation requires a valid approval token")
             timeout = self.policy.timeout_seconds if timeout_seconds is None else timeout_seconds
             if not 0 < timeout <= self.policy.timeout_seconds:
                 raise PolicyDenied("run timeout must be positive and within policy limit")
@@ -106,6 +113,8 @@ class Sandbox:
                 if k not in self.policy.allowed_env: raise PolicyDenied(f"environment variable not allowed: {k}")
                 if not isinstance(v, str) or "\0" in v: raise PolicyDenied("invalid environment value")
                 child_env[k] = v
+            if sensitive:
+                self._approval_tokens.remove(approval_token)
             self.audit.append({"event":"execution_started","timestamp":_now(),"run_id":run_id,
                                "argv":list(args),"policy_decision":"allow","cwd":str(self.workspace),
                                "network_isolation_enforced":False})
