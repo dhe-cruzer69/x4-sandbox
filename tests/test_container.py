@@ -137,7 +137,7 @@ def test_inspection_accepts_exact_hardened_configuration(tmp_path, monkeypatch):
 def test_reader_caps_output_without_stopping_drain():
     import io
     out, truncated = bytearray(), [False]
-    DockerBackend._reader(io.BytesIO(b"0123456789"), 4, out, truncated)
+    DockerBackend._read(io.BytesIO(b"0123456789"), 4, out, truncated)
     assert out == b"0123" and truncated == [True]
 
 
