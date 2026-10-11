@@ -123,7 +123,7 @@ class AuditLog:
                 if os.name == "nt":
                     import msvcrt
                     if os.fstat(lock_fd).st_size == 0:
-                        os.write(lock_fd, b"\\0")
+                        os.write(lock_fd, b"\0")
                         os.fsync(lock_fd)
                     os.lseek(lock_fd, 0, os.SEEK_SET)
                     msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
@@ -155,7 +155,7 @@ class AuditLog:
                 digest = hashlib.sha256(_json(row).encode()).hexdigest()
                 row["hash"] = digest
                 with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
-                    f.write(_json(row) + "\\n")
+                    f.write(_json(row) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
                 self.previous = digest
