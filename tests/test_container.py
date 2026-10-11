@@ -152,3 +152,26 @@ def test_remote_daemon_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "_docker", lambda *a, **k: subprocess.CompletedProcess([], 0, '{"Host":"ssh://host"}', ""))
     with pytest.raises(SandboxUnavailable, match="local"):
         b._verify_daemon()
+
+
+def test_container_image_entrypoint_is_rejected(tmp_path, monkeypatch):
+    b = make_backend(tmp_path, monkeypatch)
+    staged = tmp_path / "staged-entry"
+    staged.mkdir()
+    raw = {
+        "Name": "/x4-test",
+        "Config": {"User": "65532:65532", "Image": IMAGE, "Cmd": ["python"],
+                   "Entrypoint": ["/bin/sh", "-c"]},
+        "HostConfig": {},
+        "Mounts": [],
+    }
+    with pytest.raises(SandboxUnavailable):
+        b._verify_container(json.dumps(raw), "x4-test", staged, ("python",))
+
+
+def test_docker_cli_environment_drops_endpoint_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "tcp://attacker:2375")
+    monkeypatch.setenv("DOCKER_CONTEXT", "remote")
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "untrusted-docker-config"))
+    b = make_backend(tmp_path, monkeypatch)
+    assert not any(k.upper().startswith("DOCKER_") for k in b.env)
