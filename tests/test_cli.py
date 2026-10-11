@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from x4.sandbox.cli import main
 
