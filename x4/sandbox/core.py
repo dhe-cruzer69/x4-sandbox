@@ -112,7 +112,20 @@ class AuditLog:
                     fcntl.flock(fd, fcntl.LOCK_EX)
                 locked = True
                 if self._file_signature() != self._signature:
-                    raise SandboxError("audit log changed since this writer's last append")
+                    # Another valid AuditLog instance may have appended while this
+                    # instance was idle. Re-verify the complete chain under the
+                    # inter-process lock and continue from its verified tail.
+                    try:
+                        verified_tail = self._verify()
+                        verified_signature = self._file_signature()
+                        if verified_signature != self._file_signature():
+                            raise SandboxError("audit log changed while it was being verified")
+                    except SandboxError as exc:
+                        raise SandboxError(
+                            "audit log changed or became invalid since this writer's last append"
+                        ) from exc
+                    self.previous = verified_tail
+                    self._signature = verified_signature
                 row = dict(event)
                 row["previous_hash"] = self.previous
                 digest = hashlib.sha256(_json(row).encode()).hexdigest()
