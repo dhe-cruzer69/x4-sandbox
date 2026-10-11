@@ -101,7 +101,7 @@ class GuardedLocalModelRouter:
         if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > 1_000_000:
             raise PolicyDenied("prompt must be UTF-8 text no larger than 1 MiB")
         if set(options) - self._OPTIONS:
-            raise PolicyDenied("unsupported model-router option")
+            raise PolicyDenied("unsupported model-router options")
         if "temperature" in options and (not isinstance(options["temperature"], (int, float)) or not 0 <= options["temperature"] <= 2):
             raise PolicyDenied("temperature must be within [0, 2]")
         if "top_p" in options and (not isinstance(options["top_p"], (int, float)) or not 0 < options["top_p"] <= 1):
