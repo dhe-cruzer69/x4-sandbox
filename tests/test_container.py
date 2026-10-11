@@ -127,7 +127,9 @@ def test_inspection_accepts_exact_hardened_configuration(tmp_path, monkeypatch):
             "IpcMode": "private", "CgroupnsMode": "private", "ShmSize": b.limits.tmpfs_bytes,
             "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=67108864",
                       "/work": "rw,noexec,nosuid,nodev,size=67108864"},
-            "Binds": [str(staged.resolve()) + ":/input:ro"], "PortBindings": {}, "Devices": [], "DeviceRequests": [], "PidMode": "",
+            "Binds": [], "Mounts": [{"Type": "bind", "Source": str(staged.resolve()),
+                "Target": "/input", "ReadOnly": True}],
+            "PortBindings": {}, "Devices": [], "DeviceRequests": [], "PidMode": "",
         },
         "Mounts": [{"Type": "bind", "Source": str(staged.resolve()), "Destination": "/input", "RW": False}],
     }
