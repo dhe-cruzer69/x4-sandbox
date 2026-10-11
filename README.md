@@ -11,7 +11,7 @@ The legacy process backend is not a security boundary. It cannot enforce network
 ## Requirements
 
 - Python 3.11+
-- Docker Engine or Docker Desktop with a local named-pipe/Unix-socket context and active seccomp profile.
+- Docker CLI plus Docker Engine or Docker Desktop, using a local named-pipe/Unix-socket context and an active seccomp profile.
 - A preloaded, reviewed image addressed by immutable repository@sha256:<64 lowercase hex> digest. The runner never pulls an image during execution.
 - On Windows, Docker Desktop Linux containers use the Docker Desktop VM as part of the trusted computing base. For Windows-native hostile binaries, use a separately provisioned Windows Sandbox/VM boundary; this Docker backend does not sandbox native Windows processes.
 
