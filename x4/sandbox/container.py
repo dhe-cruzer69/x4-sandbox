@@ -217,7 +217,7 @@ class DockerBackend:
                 c.get("User") == "65532:65532",
                 h.get("NetworkMode") == "none", h.get("ReadonlyRootfs") is True,
                 h.get("Privileged") is False, "ALL" in [str(x).upper() for x in (h.get("CapDrop") or [])],
-                not h.get("CapAdd"), not h.get("Binds"), not h.get("PortBindings"),
+                not h.get("CapAdd"), len(h.get("Binds") or []) == 1, not h.get("PortBindings"),
                 not h.get("Devices"), not h.get("DeviceRequests"), h.get("PidMode") in {None, "", "private"},
                 any("no-new-privileges:true" in str(x).lower() for x in (h.get("SecurityOpt") or [])),
                 h.get("Memory") == self.limits.memory_bytes, h.get("MemorySwap") == self.limits.memory_bytes,
@@ -226,7 +226,10 @@ class DockerBackend:
                 h.get("ShmSize") == self.limits.tmpfs_bytes, h.get("CgroupnsMode") == "private",
                 all(x in tmpfs for x in ("/tmp", "/work")),
                 sum(m.get("Type") == "bind" for m in mounts) == 1,
-                all(m.get("Destination") in {"/input", "/tmp", "/work", "/dev/shm"} for m in mounts),
+                all(m.get("Destination") in {
+                    "/input", "/tmp", "/work", "/dev/shm", "/etc/hosts",
+                    "/etc/hostname", "/etc/resolv.conf"
+                } for m in mounts),
             ]
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
             raise SandboxUnavailable("container inspect was incomplete") from exc
@@ -235,11 +238,21 @@ class DockerBackend:
         for path in ("/tmp", "/work"):
             if not all(flag in str(tmpfs[path]).lower() for flag in ("noexec", "nosuid", "nodev")):
                 raise SandboxUnavailable(f"unsafe tmpfs flags for {path}")
-        binds = [m for m in mounts if m.get("Type") == "bind"]
-        if len(binds) != 1 or binds[0].get("Destination") != "/input" or binds[0].get("RW") is not False:
+        input_mounts = [m for m in mounts if m.get("Destination") == "/input"]
+        extra_binds = [
+            m for m in mounts if m.get("Type") == "bind" and m.get("Destination") != "/input"
+            and m.get("Destination") not in {"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"}
+        ]
+        if len(input_mounts) != 1 or extra_binds:
+            raise SandboxUnavailable("only the staged input bind and Docker-managed read-only host files are permitted")
+        input_mount = input_mounts[0]
+        if input_mount.get("Type") != "bind" or input_mount.get("RW") is not False:
             raise SandboxUnavailable("input mount must be read-only and mapped only at /input")
-        expected = str(staged.resolve()).replace("\\", "/").rstrip("/").casefold()
-        observed = str(binds[0].get("Source", "")).replace("\\", "/").rstrip("/").casefold()
+        if any(m.get("RW") is True for m in mounts if m is not input_mount):
+            raise SandboxUnavailable("unexpected writable mount detected")
+        if len(h.get("Binds") or []) != 1:
+            raise SandboxUnavailable("Docker HostConfig must contain exactly one configured bind mount")
+        observed = str(input_mount.get("Source", "")).replace("\\", "/").rstrip("/").casefold()
         if not self._same_mount_source(observed, staged):
             raise SandboxUnavailable("input mount source differs from the staged snapshot")
 
