@@ -20,7 +20,7 @@ from .core import AuditLog, Policy, PolicyDenied, RunResult, SandboxError, Sandb
 
 _IMAGE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}\Z")
 _ID = re.compile(r"[0-9a-f]{12,64}\Z")
-_SECRET_PARTS = {".git", ".x4", ".ssh", ".aws", ".gnupg"}
+_SECRET_PARTS = {".git", ".x4", ".ssh", ".aws", ".gnupg", ".docker", ".kube"}
 _SECRET_FILES = {".env", ".netrc", "credentials", "credentials.json", "secrets.json", "id_rsa", "id_ed25519"}
 _SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
 _INPUT_MAX = 256 * 1024 * 1024
