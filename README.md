@@ -34,7 +34,7 @@ Only for trusted code in a controlled environment:
 - Timeout and captured-output bounds
 - Environment variable allow-list and NUL rejection
 - Workspace cwd and JSONL SHA-256 hash chain
-- Fail-closed default for unsupported network-deny guarantee
+- One-use approval tokens for caller-designated sensitive SDK operations\n- Fail-closed default for unsupported network-deny guarantee
 - CLI inspect/run commands and CI tests
 
 ## Not implemented
