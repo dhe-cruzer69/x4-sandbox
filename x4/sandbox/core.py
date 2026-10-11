@@ -27,7 +27,7 @@ class Policy:
         if not 0 < self.timeout_seconds <= 3600: raise ValueError("timeout must be in (0, 3600]")
         if not 0 < self.max_output_bytes <= 10_000_000: raise ValueError("invalid output limit")
         for c in self.allowed_commands:
-            if not c or Path(c).name != c or any(x in c for x in ("/", "\\\\", "\\0")):
+            if not c or Path(c).name != c or any(x in c for x in ("/", "\\\\", "\0")):
                 raise ValueError(f"invalid executable allow-list entry: {c!r}")
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ class AuditLog:
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
-                f.write(_json(row) + "\\n"); f.flush(); os.fsync(f.fileno())
+                f.write(_json(row) + "\n"); f.flush(); os.fsync(f.fileno())
         finally: os.close(fd)
         self.previous = digest
         return digest
@@ -104,7 +104,7 @@ class Sandbox:
             child_env = {k: os.environ[k] for k in self.policy.allowed_env if k in os.environ}
             for k, v in (env or {}).items():
                 if k not in self.policy.allowed_env: raise PolicyDenied(f"environment variable not allowed: {k}")
-                if not isinstance(v, str) or "\\0" in v: raise PolicyDenied("invalid environment value")
+                if not isinstance(v, str) or "\0" in v: raise PolicyDenied("invalid environment value")
                 child_env[k] = v
             self.audit.append({"event":"execution_started","timestamp":_now(),"run_id":run_id,
                                "argv":list(args),"policy_decision":"allow","cwd":str(self.workspace),
@@ -132,7 +132,7 @@ class Sandbox:
             raise
     def _validate(self, args: tuple[str, ...]) -> None:
         if not args or not args[0]: raise PolicyDenied("argv must contain executable")
-        if any("\\0" in x for x in args): raise PolicyDenied("NUL bytes are forbidden")
+        if any("\0" in x for x in args): raise PolicyDenied("NUL bytes are forbidden")
         if args[0] not in self.policy.allowed_commands: raise PolicyDenied(f"executable not allow-listed: {args[0]!r}")
         if Path(args[0]).name != args[0]: raise PolicyDenied("use allow-listed executable name, not path")
         if any(x in {"-c","/c","-Command","-EncodedCommand"} for x in args[1:]):
