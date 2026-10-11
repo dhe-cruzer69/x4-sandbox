@@ -105,3 +105,4 @@ def test_mcp_caller_cannot_choose_capability():
 def test_grant_repr_hides_sensitive_field():
     grant = ApprovalAuthority().issue("mcp.tool.invoke", "server/tool")
     assert "token=" not in repr(grant)
+    assert grant.token not in repr(grant)
