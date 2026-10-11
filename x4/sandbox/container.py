@@ -68,9 +68,12 @@ class DockerBackend:
         self.docker = shutil.which(docker_executable)
         if not self.docker:
             raise SandboxUnavailable("Docker CLI unavailable; process fallback is forbidden")
-        self.env = dict(os.environ)
-        for key in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
-            self.env.pop(key, None)
+        # Docker CLI inherits only ordinary runtime necessities. In particular, do
+        # not inherit plugin, endpoint, TLS override, or credential-helper controls.
+        allowed_cli_env = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+                           "HOME", "USERPROFILE", "PROGRAMDATA"}
+        self.env = {k: v for k, v in os.environ.items()
+                    if k.upper() in allowed_cli_env}
         self.require_rootless = require_rootless
 
     def _docker(self, argv: Sequence[str], timeout: float = 10) -> subprocess.CompletedProcess[str]:
@@ -210,7 +213,8 @@ class DockerBackend:
             mounts, tmpfs = item.get("Mounts", []), item["HostConfig"].get("Tmpfs") or {}
             checks = [
                 item.get("Name", "").lstrip("/") == name, c.get("Image") == self.image,
-                tuple(c.get("Cmd") or ()) == argv, c.get("User") == "65532:65532",
+                tuple(c.get("Cmd") or ()) == argv, c.get("Entrypoint") in (None, []),
+                c.get("User") == "65532:65532",
                 h.get("NetworkMode") == "none", h.get("ReadonlyRootfs") is True,
                 h.get("Privileged") is False, "ALL" in [str(x).upper() for x in (h.get("CapDrop") or [])],
                 not h.get("CapAdd"), not h.get("Binds"), not h.get("PortBindings"),
