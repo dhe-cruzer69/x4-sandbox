@@ -125,7 +125,7 @@ class DockerBackend:
                 raise PolicyDenied("input must be an explicit relative path")
             p = PurePosixPath(raw.replace("\\", "/"))
             if p.is_absolute() or ":" in raw or any(x in {"", ".", ".."} for x in p.parts):
-                raise PolicyDenied("input path traversal or absolute path denied")
+                raise PolicyDenied("input path must be relative; traversal and absolute paths are denied")
             name = p.as_posix()
             if name in selected or any(name.startswith(x + "/") or x.startswith(name + "/") for x in selected):
                 raise PolicyDenied("duplicate or overlapping inputs denied")
@@ -146,7 +146,7 @@ class DockerBackend:
                 parts = [x.lower() for x in rel.parts]
                 leaf = parts[-1]
                 if any(x in _SECRET_PARTS for x in parts) or leaf == ".env" or leaf.startswith(".env.") or leaf in _SECRET_FILES or leaf.endswith(_SECRET_SUFFIXES):
-                    raise PolicyDenied("credential, environment, or metadata path denied")
+                    raise PolicyDenied("environment files, credentials, and metadata paths are denied")
                 if item.is_dir():
                     (target / rel).mkdir(parents=True, exist_ok=True)
                     continue
