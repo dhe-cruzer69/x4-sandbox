@@ -83,71 +83,96 @@ class AuditLog:
             return None
         return (info.st_ino, info.st_size, info.st_mtime_ns)
 
-    def _verify(self) -> str:
-        if not self.path.exists() or not self.path.stat().st_size: return "0" * 64
+    def _verify(self, file_descriptor: int | None = None) -> str:
+        if file_descriptor is None:
+            if not self.path.exists() or not self.path.stat().st_size:
+                return "0" * 64
+            stream = self.path.open(encoding="utf-8")
+        else:
+            os.lseek(file_descriptor, 0, os.SEEK_SET)
+            # Duplicate the existing descriptor rather than reopening the file;
+            # Windows may deny a second open while the writer handle is active.
+            stream = os.fdopen(os.dup(file_descriptor), "r", encoding="utf-8")
         prev = "0" * 64
-        with self.path.open(encoding="utf-8") as f:
+        with stream as f:
             for n, line in enumerate(f, 1):
-                try: row = json.loads(line)
-                except json.JSONDecodeError as e: raise SandboxError(f"invalid audit JSON on line {n}") from e
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise SandboxError(f"invalid audit JSON on line {n}") from e
                 digest = row.pop("hash", None)
-                if row.get("previous_hash") != prev: raise SandboxError(f"audit chain broken on line {n}")
+                if row.get("previous_hash") != prev:
+                    raise SandboxError(f"audit chain broken on line {n}")
                 if hashlib.sha256(_json(row).encode()).hexdigest() != digest:
                     raise SandboxError(f"audit hash mismatch on line {n}")
                 prev = digest
         return prev
+
     def append(self, event: Mapping[str, Any]) -> str:
-        # Lock the log file across threads and processes. The signature check catches
-        # out-of-band writes since this instance was initialized or last appended.
+        # Use a separate lock file so Windows byte-range locks do not prevent
+        # other handles from reading or inspecting the audit JSONL itself.
         with self._lock:
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+            lock_path = self.path.with_name(self.path.name + ".lock")
+            if lock_path.is_symlink():
+                raise SandboxError("audit lock path must not be a symlink")
+            lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            lock_fd = os.open(lock_path, lock_flags, 0o600)
             locked = False
+            fd: int | None = None
             try:
                 if os.name == "nt":
                     import msvcrt
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    if os.fstat(lock_fd).st_size == 0:
+                        os.write(lock_fd, b"\\0")
+                        os.fsync(lock_fd)
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 locked = True
+
+                audit_flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(self.path, audit_flags, 0o600)
                 if self._file_signature() != self._signature:
                     # Another valid AuditLog instance may have appended while this
                     # instance was idle. Re-verify the complete chain under the
                     # inter-process lock and continue from its verified tail.
                     try:
-                        verified_tail = self._verify()
+                        verified_tail = self._verify(fd)
                         verified_signature = self._file_signature()
                         if verified_signature != self._file_signature():
                             raise SandboxError("audit log changed while it was being verified")
-                    except SandboxError as exc:
+                    except (SandboxError, OSError, UnicodeError) as exc:
                         raise SandboxError(
                             "audit log changed or became invalid since this writer's last append"
                         ) from exc
                     self.previous = verified_tail
                     self._signature = verified_signature
+
                 row = dict(event)
                 row["previous_hash"] = self.previous
                 digest = hashlib.sha256(_json(row).encode()).hexdigest()
                 row["hash"] = digest
                 with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as f:
-                    f.write(_json(row) + "\n")
+                    f.write(_json(row) + "\\n")
                     f.flush()
                     os.fsync(f.fileno())
                 self.previous = digest
                 self._signature = self._file_signature()
                 return digest
             finally:
+                if fd is not None:
+                    os.close(fd)
                 if locked:
                     if os.name == "nt":
                         import msvcrt
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        os.lseek(lock_fd, 0, os.SEEK_SET)
+                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
                     else:
                         import fcntl
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
-
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
 class Sandbox:
     """Run allow-listed programs with shell=False, timeout and bounded output.
 
