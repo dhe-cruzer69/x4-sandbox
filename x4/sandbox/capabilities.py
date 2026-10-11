@@ -6,7 +6,7 @@ import json
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from .core import ApprovalRequired, PolicyDenied
@@ -14,7 +14,7 @@ from .core import ApprovalRequired, PolicyDenied
 
 @dataclass(frozen=True)
 class ApprovalGrant:
-    token: str
+    token: str = field(repr=False)
     capability: str
     resource: str
     expires_at: float
@@ -28,8 +28,9 @@ class ApprovalAuthority:
         self._grants: dict[str, tuple[str, str, float]] = {}
 
     def issue(self, capability: str, resource: str, *, ttl_seconds: float = 60.0) -> ApprovalGrant:
-        if not capability or not resource or "\0" in capability + resource:
-            raise ValueError("capability and resource must be non-empty")
+        if (not capability or not resource or "\0" in capability + resource
+                or len(capability) > 128 or len(resource) > 512):
+            raise ValueError("capability/resource must be non-empty and within size limits")
         if not 1 <= ttl_seconds <= 600:
             raise ValueError("approval TTL must be 1..600 seconds")
         token = secrets.token_urlsafe(32)
