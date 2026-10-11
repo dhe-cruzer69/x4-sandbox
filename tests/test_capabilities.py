@@ -99,3 +99,8 @@ def test_mcp_caller_cannot_choose_capability():
     import inspect
     parameters = inspect.signature(GuardedMCPGateway.call_tool).parameters
     assert "capability" not in parameters
+
+
+def test_grant_repr_hides_sensitive_field():
+    grant = ApprovalAuthority().issue("mcp.tool.invoke", "server/tool")
+    assert "token=" not in repr(grant)
