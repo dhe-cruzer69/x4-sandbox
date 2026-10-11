@@ -63,6 +63,15 @@ class AuditLog:
         with type(self)._path_locks_guard:
             self._lock = type(self)._path_locks.setdefault(key, threading.RLock())
         self.previous = self._verify()
+        self._signature = self._file_signature()
+
+    def _file_signature(self) -> tuple[int, int, int] | None:
+        try:
+            info = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (info.st_ino, info.st_size, info.st_mtime_ns)
+
     def _verify(self) -> str:
         if not self.path.exists() or not self.path.stat().st_size: return "0" * 64
         prev = "0" * 64
@@ -80,9 +89,9 @@ class AuditLog:
         # Serialize writers sharing this path in this process; recheck the persisted
         # chain before each append so edits after initialization are detected.
         with self._lock:
-            current = self._verify()
-            if current != self.previous:
+            if self._file_signature() != self._signature:
                 raise SandboxError("audit log changed since this writer's last append")
+            current = self.previous
             row = dict(event)
             row["previous_hash"] = current
             digest = hashlib.sha256(_json(row).encode()).hexdigest()
@@ -96,6 +105,7 @@ class AuditLog:
             finally:
                 os.close(fd)
             self.previous = digest
+            self._signature = self._file_signature()
             return digest
 
 class Sandbox:
