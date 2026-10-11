@@ -35,13 +35,14 @@ class ApprovalAuthority:
             raise ValueError("approval TTL must be 1..600 seconds")
         token = secrets.token_urlsafe(32)
         expiry = time.time() + ttl_seconds
+        deadline = time.monotonic() + ttl_seconds
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             self._grants = {k: v for k, v in self._grants.items() if v[2] > now}
             if len(self._grants) >= 10_000:
                 raise PolicyDenied("approval capacity reached; operator review required")
-            self._grants[digest] = (capability, resource, expiry)
+            self._grants[digest] = (capability, resource, deadline)
         return ApprovalGrant(token, capability, resource, expiry)
 
     def consume(self, token: str | None, capability: str, resource: str) -> None:
@@ -53,7 +54,7 @@ class ApprovalAuthority:
         if grant is None:
             raise ApprovalRequired("approval missing, expired, invalid, or already used")
         cap, target, expiry = grant
-        if time.time() >= expiry:
+        if time.monotonic() >= expiry:
             raise ApprovalRequired("approval expired")
         if not secrets.compare_digest(cap, capability) or not secrets.compare_digest(target, resource):
             raise ApprovalRequired("approval does not cover this capability and exact resource")
@@ -71,14 +72,14 @@ class CapabilityGate:
             raise ValueError("capability names and resource scopes must be non-empty")
         if not self._approval_required.issubset(self._grants):
             raise ValueError("approval-required pairs must also be explicitly allow-listed")
-        self.authority = authority or ApprovalAuthority()
+        self._authority = authority or ApprovalAuthority()
 
     def authorize(self, capability: str, resource: str, *, approval_token: str | None = None) -> None:
         pair = (capability, resource)
         if pair not in self._grants:
             raise PolicyDenied("capability/resource pair not allow-listed")
         if pair in self._approval_required:
-            self.authority.consume(approval_token, capability, resource)
+            self._authority.consume(approval_token, capability, resource)
         elif approval_token is not None:
             raise PolicyDenied("approval token supplied where approval is not configured")
 
@@ -92,7 +93,7 @@ class GuardedLocalModelRouter:
         self._router = router
         self._gate = gate
         self._models = frozenset(allowed_models)
-        if not self._models or any(not m or "\0" in m for m in self._models):
+        if not self._models or any(not m or "\0" in m or len(m) > 256 for m in self._models):
             raise ValueError("exact local model identifiers are required")
 
     def generate(self, *, model: str, prompt: str, provider: str = "local",
@@ -101,18 +102,32 @@ class GuardedLocalModelRouter:
             raise PolicyDenied("only local provider is permitted; cloud fallback is disabled")
         if model not in self._models:
             raise PolicyDenied("model is not allow-listed")
-        if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > 1_000_000:
-            raise PolicyDenied("prompt must be UTF-8 text no larger than 1 MiB")
+        if not isinstance(prompt, str):
+            raise PolicyDenied("prompt must be UTF-8 text")
+        try:
+            prompt_size = len(prompt.encode("utf-8"))
+        except UnicodeError as exc:
+            raise PolicyDenied("prompt contains invalid Unicode") from exc
+        if prompt_size > 1_000_000:
+            raise PolicyDenied("prompt must be no larger than 1 MiB")
         if set(options) - self._OPTIONS:
             raise PolicyDenied("unsupported model-router options")
-        if "temperature" in options and (not isinstance(options["temperature"], (int, float)) or not 0 <= options["temperature"] <= 2):
+        if "temperature" in options and (isinstance(options["temperature"], bool) or not isinstance(options["temperature"], (int, float)) or not 0 <= options["temperature"] <= 2):
             raise PolicyDenied("temperature must be within [0, 2]")
-        if "top_p" in options and (not isinstance(options["top_p"], (int, float)) or not 0 < options["top_p"] <= 1):
+        if "top_p" in options and (isinstance(options["top_p"], bool) or not isinstance(options["top_p"], (int, float)) or not 0 < options["top_p"] <= 1):
             raise PolicyDenied("top_p must be within (0, 1]")
-        if "max_tokens" in options and (not isinstance(options["max_tokens"], int) or not 1 <= options["max_tokens"] <= 32768):
+        if "max_tokens" in options and (isinstance(options["max_tokens"], bool) or not isinstance(options["max_tokens"], int) or not 1 <= options["max_tokens"] <= 32768):
             raise PolicyDenied("max_tokens must be within [1, 32768]")
-        if "stop" in options and (not isinstance(options["stop"], (str, list)) or (isinstance(options["stop"], list) and (len(options["stop"]) > 8 or any(not isinstance(x, str) for x in options["stop"])))):
-            raise PolicyDenied("stop must be a string or list of at most eight strings")
+        if "stop" in options:
+            stop = options["stop"]
+            if isinstance(stop, str):
+                valid_stop = len(stop) <= 128
+            elif isinstance(stop, list):
+                valid_stop = len(stop) <= 8 and all(isinstance(x, str) and len(x) <= 128 for x in stop)
+            else:
+                valid_stop = False
+            if not valid_stop:
+                raise PolicyDenied("stop must be a string or list of at most eight 128-character strings")
         self._gate.authorize("model.invoke", model, approval_token=approval_token)
         return self._router.generate(model=model, prompt=prompt, provider="local",
                                      allow_fallback=False, **options)
@@ -144,12 +159,17 @@ class GuardedMCPGateway:
             raise PolicyDenied("tool arguments must be a JSON object")
         try:
             encoded = json.dumps(dict(arguments), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        except (TypeError, ValueError) as exc:
-            raise PolicyDenied("tool arguments must be JSON-safe") from exc
-        if len(encoded.encode("utf-8")) > 1_000_000:
-            raise PolicyDenied("tool arguments exceed 1 MiB")
+            if len(encoded.encode("utf-8")) > 1_000_000:
+                raise PolicyDenied("tool arguments exceed 1 MiB")
+            # Round-trip to an owned JSON snapshot so concurrent caller mutation cannot
+            # change data after validation but before dispatch.
+            normalized = json.loads(encoded)
+        except PolicyDenied:
+            raise
+        except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+            raise PolicyDenied("tool arguments must be bounded, valid JSON-safe data") from exc
         # Capability selection comes from trusted adapter configuration, never caller input.
         capability = self._capabilities.get((server, tool), "mcp.tool.invoke")
         self._gate.authorize(capability, resource, approval_token=approval_token)
         # Deliberately do not log payloads; arguments can include secrets or user data.
-        return self._gateway.call_tool(server=server, tool=tool, arguments=dict(arguments))
+        return self._gateway.call_tool(server=server, tool=tool, arguments=normalized)
