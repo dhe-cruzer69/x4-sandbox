@@ -68,6 +68,8 @@ class CapabilityGate:
         self._approval_required = frozenset((str(c), str(r)) for c, r in approval_required)
         if any(not c or not r or "\0" in c + r for c, r in self._grants | self._approval_required):
             raise ValueError("capability names and resource scopes must be non-empty")
+        if not self._approval_required.issubset(self._grants):
+            raise ValueError("approval-required pairs must also be explicitly allow-listed")
         self.authority = authority or ApprovalAuthority()
 
     def authorize(self, capability: str, resource: str, *, approval_token: str | None = None) -> None:
@@ -118,8 +120,14 @@ class GuardedLocalModelRouter:
 class GuardedMCPGateway:
     """Gate exact server/tool invocations; transport and MCP authentication stay external."""
 
-    def __init__(self, gateway: Any, gate: CapabilityGate) -> None:
+    def __init__(self, gateway: Any, gate: CapabilityGate, *,
+                 capabilities: Mapping[tuple[str, str], str] | None = None) -> None:
         self._gateway, self._gate = gateway, gate
+        self._capabilities = dict(capabilities or {})
+        for (server, tool), capability in self._capabilities.items():
+            self._resource(server, tool)
+            if not capability or "\0" in capability:
+                raise ValueError("tool capability must be a non-empty identifier")
 
     @staticmethod
     def _resource(server: str, tool: str) -> str:
@@ -129,7 +137,7 @@ class GuardedMCPGateway:
         return f"{server}/{tool}"
 
     def call_tool(self, *, server: str, tool: str, arguments: Mapping[str, Any],
-                  capability: str = "mcp.tool.invoke", approval_token: str | None = None) -> Any:
+                  approval_token: str | None = None) -> Any:
         resource = self._resource(server, tool)
         if not isinstance(arguments, Mapping):
             raise PolicyDenied("tool arguments must be a JSON object")
@@ -139,6 +147,8 @@ class GuardedMCPGateway:
             raise PolicyDenied("tool arguments must be JSON-safe") from exc
         if len(encoded.encode("utf-8")) > 1_000_000:
             raise PolicyDenied("tool arguments exceed 1 MiB")
+        # Capability selection comes from trusted adapter configuration, never caller input.
+        capability = self._capabilities.get((server, tool), "mcp.tool.invoke")
         self._gate.authorize(capability, resource, approval_token=approval_token)
         # Deliberately do not log payloads; arguments can include secrets or user data.
         return self._gateway.call_tool(server=server, tool=tool, arguments=dict(arguments))
