@@ -217,7 +217,7 @@ class DockerBackend:
                 c.get("User") == "65532:65532",
                 h.get("NetworkMode") == "none", h.get("ReadonlyRootfs") is True,
                 h.get("Privileged") is False, "ALL" in [str(x).upper() for x in (h.get("CapDrop") or [])],
-                not h.get("CapAdd"), len(h.get("Binds") or []) == 1, not h.get("PortBindings"),
+                not h.get("CapAdd"), not h.get("Binds"), len(h.get("Mounts") or []) == 1, not h.get("PortBindings"),
                 not h.get("Devices"), not h.get("DeviceRequests"), h.get("PidMode") in {None, "", "private"},
                 any("no-new-privileges:true" in str(x).lower() for x in (h.get("SecurityOpt") or [])),
                 h.get("Memory") == self.limits.memory_bytes, h.get("MemorySwap") == self.limits.memory_bytes,
@@ -250,8 +250,16 @@ class DockerBackend:
             raise SandboxUnavailable("input mount must be read-only and mapped only at /input")
         if any(m.get("RW") is True for m in mounts if m is not input_mount):
             raise SandboxUnavailable("unexpected writable mount detected")
-        if len(h.get("Binds") or []) != 1:
-            raise SandboxUnavailable("Docker HostConfig must contain exactly one configured bind mount")
+        configured_mounts = h.get("Mounts") or []
+        if len(configured_mounts) != 1:
+            raise SandboxUnavailable("Docker HostConfig must contain exactly one configured mount")
+        configured = configured_mounts[0]
+        if (configured.get("Type") != "bind" or configured.get("Target") != "/input"
+                or configured.get("ReadOnly") is not True
+                or configured.get("Source") is None):
+            raise SandboxUnavailable("configured mount must be a read-only bind at /input")
+        if not self._same_mount_source(str(configured.get("Source", "")), staged):
+            raise SandboxUnavailable("configured Docker mount source differs from the staged snapshot")
         observed = str(input_mount.get("Source", "")).replace("\\", "/").rstrip("/").casefold()
         if not self._same_mount_source(observed, staged):
             raise SandboxUnavailable("input mount source differs from the staged snapshot")
