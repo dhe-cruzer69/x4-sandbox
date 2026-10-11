@@ -46,3 +46,24 @@ def test_sensitive_approval_token_is_one_use(tmp_path):
     assert result.returncode==0
     with pytest.raises(Exception,match="approval token"):
         sb.run([py(),"--version"],sensitive=True,approval_token="approval-token-123456")
+
+
+def test_output_capture_is_bounded(tmp_path):
+    sb = make(tmp_path, allow_unenforced_network=True, max_output_bytes=32)
+    result = script(sb, "print('x' * 10000)")
+    assert len(result.stdout.encode("utf-8")) <= 32
+    assert result.output_truncated
+
+
+def test_audit_redacts_raw_arguments(tmp_path):
+    sb = make(tmp_path, allow_unenforced_network=True)
+    sb.run([py(), "--version", "sensitive-argument-not-for-audit"])
+    audit = (tmp_path / ".x4" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "sensitive-argument-not-for-audit" not in audit
+    assert '"argv_sha256"' in audit
+    assert '"argument_count":3' in audit
+
+
+def test_policy_rejects_windows_path_in_executable_allowlist():
+    with pytest.raises(ValueError, match="invalid executable"):
+        Policy((r"C:\\Windows\\System32\\cmd.exe",))
