@@ -177,3 +177,28 @@ def test_docker_cli_environment_drops_endpoint_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "untrusted-docker-config"))
     b = make_backend(tmp_path, monkeypatch)
     assert not any(k.upper().startswith("DOCKER_") for k in b.env)
+
+
+@pytest.mark.parametrize("secret_dir", [".docker", ".kube"])
+def test_common_cli_credential_directories_rejected(tmp_path, monkeypatch, secret_dir):
+    backend = make_backend(tmp_path, monkeypatch)
+    config_dir = tmp_path / secret_dir
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text('{"auths":{"example":{"auth":"secret"}}}', encoding="utf-8")
+    staged = tmp_path / "staged-credentials"
+    staged.mkdir()
+
+    with pytest.raises(PolicyDenied, match="credentials"):
+        backend._stage_inputs(staged, [secret_dir])
+
+
+def test_fractional_cpu_limit_keeps_round_trip_precision(tmp_path, monkeypatch):
+    backend = make_backend(
+        tmp_path, monkeypatch, limits=ContainerLimits(cpus=0.123456789)
+    )
+    staged = tmp_path / "stage-precision"
+    staged.mkdir()
+    args = backend._create_args("x4-cpu-test", staged, ("python", "--version"), {})
+
+    cpu_index = args.index("--cpus")
+    assert args[cpu_index + 1] == repr(0.123456789)
