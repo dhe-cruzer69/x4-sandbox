@@ -225,7 +225,7 @@ class DockerBackend:
                 h.get("PidsLimit") == self.limits.pids_limit, h.get("IpcMode") == "private",
                 h.get("ShmSize") == self.limits.tmpfs_bytes, h.get("CgroupnsMode") == "private",
                 all(x in tmpfs for x in ("/tmp", "/work")),
-                sum(m.get("Type") == "bind" for m in mounts) == 1,
+                sum(m.get("Type") == "bind" and m.get("Destination") not in {"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"} for m in mounts) == 1,
                 all(m.get("Destination") in {
                     "/input", "/tmp", "/work", "/dev/shm", "/etc/hosts",
                     "/etc/hostname", "/etc/resolv.conf"
