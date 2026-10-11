@@ -35,3 +35,14 @@ def test_audit_tampering_detected(tmp_path):
     p=tmp_path/"audit.jsonl"; a=AuditLog(p); a.append({"event":"one","n":1}); a.append({"event":"two","n":2})
     lines=p.read_text().splitlines(); row=json.loads(lines[0]); row["n"]=99; lines[0]=json.dumps(row); p.write_text("\n".join(lines)+"\n")
     with pytest.raises(Exception,match="audit (chain broken|hash mismatch)"): AuditLog(p)
+
+def test_sensitive_operation_requires_approval_token(tmp_path):
+    sb=Sandbox(tmp_path, Policy((py(),),allow_unenforced_network=True))
+    with pytest.raises(Exception,match="approval token"):
+        sb.run([py(),"--version"],sensitive=True)
+def test_sensitive_approval_token_is_one_use(tmp_path):
+    sb=Sandbox(tmp_path, Policy((py(),),allow_unenforced_network=True),approval_tokens=("approval-token-123456",))
+    result=sb.run([py(),"--version"],sensitive=True,approval_token="approval-token-123456")
+    assert result.returncode==0
+    with pytest.raises(Exception,match="approval token"):
+        sb.run([py(),"--version"],sensitive=True,approval_token="approval-token-123456")
