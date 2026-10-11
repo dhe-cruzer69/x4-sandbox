@@ -66,7 +66,7 @@ def test_audit_redacts_raw_arguments(tmp_path):
 
 def test_policy_rejects_windows_path_in_executable_allowlist():
     with pytest.raises(ValueError, match="invalid executable"):
-        Policy((r"C:\\Windows\\System32\\cmd.exe",))
+        Policy((r"C:\Windows\System32\cmd.exe",))
 
 def test_process_allowlist_network_policy_fails_closed(tmp_path):
     sb = Sandbox(tmp_path, Policy((py(),), network="allowlist", allow_unenforced_network=True))
@@ -88,3 +88,17 @@ def test_audit_log_detects_external_change_after_init(tmp_path):
         stream.write("{}\n")
     with pytest.raises(Exception, match="audit log changed"):
         audit.append({"event": "second"})
+
+
+def test_audit_log_instances_append_from_verified_shared_tail(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    first = AuditLog(path)
+    second = AuditLog(path)
+
+    first.append({"event": "first"})
+    second.append({"event": "second"})
+    first.append({"event": "third"})
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["first", "second", "third"]
+    assert AuditLog(path).previous == rows[-1]["hash"]
