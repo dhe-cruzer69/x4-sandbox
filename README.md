@@ -27,6 +27,26 @@ Only for trusted code in a controlled environment:
 
     x4-sandbox run --workspace ./workspace --allow python --acknowledge-unenforced-network -- python --version
 
+<!-- X4-APEX-DIAGRAM-START:x4-sandbox -->
+
+```mermaid
+flowchart TD
+    CALLER[Trusted Caller] --> INSPECT[Inspect Workspace and Policy]
+    INSPECT --> ALLOW{Exact Executable Allowed?}
+    ALLOW -->|no| DENY[Reject and Audit]
+    ALLOW -->|yes| ARGV[Build Argument Vector]
+    ARGV --> EXEC[Subprocess with shell=false]
+    EXEC --> LIMIT[Timeout and Output Bounds]
+    LIMIT --> RECORD[JSONL SHA-256 Audit Chain]
+    APPROVAL[One-use Sensitive-Action Token] -. required for designated actions .-> EXEC
+    EXEC -. process may still reach .-> OS[Host OS Resources]
+    OS -. no enforced isolation .-> NET[Network and Filesystem]
+    style NET fill:#cf222e,color:#ffffff
+    style OS fill:#cf222e,color:#ffffff
+```
+
+<!-- X4-APEX-DIAGRAM-END:x4-sandbox -->
+
 ## Implemented
 
 - Exact executable allow-list and argument-vector execution with shell=False
