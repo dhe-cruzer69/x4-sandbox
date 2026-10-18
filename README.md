@@ -68,23 +68,5 @@ executing untrusted code.
 
 > Status: architecture documentation; implementation and deployment claims require independent verification.
 
-```mermaid
-flowchart TB
-  Request[Execution request] --> Parse[Parse command and context]
-  Parse --> Root{Path inside workspace?}
-  Root -->|no| RejectPath[Deny path escape]
-  Root -->|yes| Rules[Evaluate policy rules]
-  Rules --> Decision{Allowed?}
-  Decision -->|no| Deny[Return denial + audit event]
-  Decision -->|yes| Approval{Approval required?}
-  Approval -->|yes| Gate{Valid approval?}
-  Approval -->|no| Boundary[Execution boundary]
-  Gate -->|no| Deny
-  Gate -->|yes| Boundary
-  Boundary --> Process[Process execution]
-  Process -.uncontained unless OS isolation is configured.-> Host[Host filesystem / network / resources]
-  Process --> Audit[Record outcome]
-  Deny --> Audit
-```
 **Security boundary:** Policy checks are not equivalent to OS-level isolation. Verify process, network, filesystem, and resource controls before calling this a secure sandbox.
 
