@@ -1,7 +1,11 @@
-import json, sys
+import json
+import sys
 from pathlib import Path
+
 import pytest
+
 from x4.sandbox import AuditLog, Policy, PolicyDenied, Sandbox, SandboxUnavailable
+
 
 def py(): return Path(sys.executable).name
 def make(tmp_path, **kw): return Sandbox(tmp_path, Policy((py(),), **kw))
