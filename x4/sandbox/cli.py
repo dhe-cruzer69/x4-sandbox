@@ -1,7 +1,12 @@
 """X4 sandbox CLI."""
-import argparse, json, sys
+
+import argparse
+import json
+import sys
 from pathlib import Path
+
 from .core import Policy, Sandbox, SandboxError
+
 
 def main(argv=None) -> int:
     p=argparse.ArgumentParser(prog="x4-sandbox"); sub=p.add_subparsers(dest="action",required=True)
