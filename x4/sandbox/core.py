@@ -1,10 +1,19 @@
 """Policy-gated process execution. This is not an OS security boundary."""
 from __future__ import annotations
-import hashlib, json, os, shutil, subprocess, time, uuid
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import time
+import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
+
 
 class SandboxError(RuntimeError):
     """Base sandbox exception."""
@@ -29,7 +38,7 @@ class Policy:
         if not 0 < self.timeout_seconds <= 3600: raise ValueError("timeout must be in (0, 3600]")
         if not 0 < self.max_output_bytes <= 10_000_000: raise ValueError("invalid output limit")
         for c in self.allowed_commands:
-            if not c or Path(c).name != c or any(x in c for x in ("/", "\\\\", "\0")):
+            if not c or Path(c).name != c or any(x in c for x in ("/", "\\", "\0")):
                 raise ValueError(f"invalid executable allow-list entry: {c!r}")
 
 @dataclass(frozen=True)
@@ -48,7 +57,7 @@ class RunResult:
 
 def _json(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-def _now() -> str: return datetime.now(timezone.utc).isoformat()
+def _now() -> str: return datetime.now(UTC).isoformat()
 def _text(raw: bytes, cap: int) -> tuple[str, bool]:
     return raw[:cap].decode("utf-8", errors="replace"), len(raw) > cap
 
@@ -120,7 +129,7 @@ class Sandbox:
                                "network_isolation_enforced":False})
             try:
                 p = subprocess.run(list(args), cwd=self.workspace, env=child_env, shell=False,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL, capture_output=True,
                     timeout=timeout, check=False, close_fds=True)
                 out, oc = _text(p.stdout, self.policy.max_output_bytes)
                 err, ec = _text(p.stderr, self.policy.max_output_bytes)
